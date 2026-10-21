@@ -20,7 +20,8 @@ Rebuilding a device means flashing the image, importing its `/etc` and rebooting
   overlays it uses, `versions.env` pins OpenWrt and AmneziaWG with their checksums,
   `packages.txt` adds packages (or removes defaults with `-name`), and `files/` holds files for this
   image only.
-- `lists/` and `overlays/` hold packages and files shared by several images.
+- `lists/` and `overlays/` hold packages and files shared by several images. A tool of our own, like
+  etcgit, is a package in `packages/` instead, so an image's manifest shows which version it has.
 - `packages/` is a package feed of its own, built with the OpenWrt SDK for each image that lists one of
   its packages. An image gets these over the feeds' packages of the same name.
 - `build.sh` is the whole build.

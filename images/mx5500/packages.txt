@@ -1,7 +1,7 @@
 # mx5500 only, on top of the ImageBuilder defaults (which leave out LuCI).
 keepalived
 tailscale
-git
+etcgit
 less
 terminfo
 iputils-arping
