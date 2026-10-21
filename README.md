@@ -17,10 +17,12 @@ Rebuilding a device means flashing the image, importing its `/etc` and rebooting
 ## Layout
 
 - `images/<name>/` is one device. `image.env` says what the device is and which shared lists and
-  overlays it uses, `versions.env` pins OpenWrt, sing-box and AmneziaWG with their checksums,
+  overlays it uses, `versions.env` pins OpenWrt and AmneziaWG with their checksums,
   `packages.txt` adds packages (or removes defaults with `-name`), and `files/` holds files for this
   image only.
 - `lists/` and `overlays/` hold packages and files shared by several images.
+- `packages/` is a package feed of its own, built with the OpenWrt SDK for each image that lists one of
+  its packages. An image gets these over the feeds' packages of the same name.
 - `build.sh` is the whole build.
 
 ## Building
@@ -29,8 +31,8 @@ Rebuilding a device means flashing the image, importing its `/etc` and rebooting
 ./build.sh <name>
 ```
 
-It needs the ImageBuilder's prerequisites, and Go for an image that builds sing-box from source. The
-images end up in `.build/<name>/out`.
+It needs the ImageBuilder's and SDK's prerequisites; Go makes the SDK's Go build faster. The images end
+up in `.build/<name>/out`.
 
 The Build image workflow runs the same script on GitHub Actions and publishes each build as a release;
 `.github/workflows/build.yml` describes the tags and how many are kept.

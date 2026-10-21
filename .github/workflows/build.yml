@@ -24,22 +24,19 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v7
 
-    - name: Check the image; does it build sing-box from source?
-      id: needs
+    - name: Check the image
       run: |
         case "$IMAGE" in ''|*[!a-z0-9-]*) echo "bad image name: $IMAGE"; exit 1 ;; esac
         [ -f "images/$IMAGE/image.env" ] || { echo "no such image: $IMAGE"; exit 1; }
-        . "images/$IMAGE/image.env"
-        echo "go=${SINGBOX_BUILD_TAGS:+true}" >> $GITHUB_OUTPUT
 
+    # bootstraps the SDK's Go, for packages/ in Go
     - name: Set up Go
-      if: steps.needs.outputs.go == 'true'
       uses: actions/setup-go@v7
       with:
         go-version: '1.26'
         cache: false
 
-    - name: ImageBuilder prerequisites
+    - name: ImageBuilder and SDK prerequisites
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |

@@ -18,7 +18,7 @@ kmod-usb-net-cdc-ether
 usbmuxd
 libimobiledevice
 usbutils
-# init script and UCI config; build.sh replaces its /usr/bin/sing-box with the upstream build
+# from packages/, built by build.sh; yq for its YAML conffile
 sing-box
 kmod-nft-tproxy
 kmod-nft-socket
