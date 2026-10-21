@@ -2,11 +2,11 @@
 # Build one image with the official OpenWrt ImageBuilder. Usage: ./build.sh <image>, where images/<image>/
 # holds image.env, versions.env, packages.txt and optionally files/.
 # The image gets: the package lists named in LISTS (lists/<name>.txt) plus its packages.txt, AmneziaWG
-# from awg-openwrt and sing-box when versions.env pins them, and the overlays named in OVERLAYS
-# (overlays/<name>/) followed by its own files/.
+# from awg-openwrt when versions.env pins it, and the overlays named in OVERLAYS (overlays/<name>/)
+# followed by its own files/. Listed packages that packages/ defines are built with the OpenWrt SDK.
 # Runs the same on a workstation and in GitHub Actions (.github/workflows/build.yml).
-# Needs: git, curl, rsync, zstd, the ImageBuilder prerequisites (make, gawk, patch, ...) and, for an image
-# that builds sing-box from source, go (>= sing-box's go.mod).
+# Needs: git, curl, rsync, zstd, the ImageBuilder and SDK prerequisites (make, gawk, patch, ...) and, for
+# packages in Go, go to bootstrap the SDK's Go (without it the SDK builds its own bootstrap chain).
 # Output: .build/<image>/out with the images, manifest, sha256sums and BUILDINFO.
 set -euo pipefail
 
@@ -14,43 +14,67 @@ REPO_DIR=$(cd "$(dirname "$0")" && pwd)
 IMAGE=${1:?usage: $0 <image>}
 IMAGE_DIR=$REPO_DIR/images/$IMAGE
 [ -f "$IMAGE_DIR/image.env" ] || { echo "no such image: $IMAGE"; exit 1; }
-# TARGET, PROFILE, ARCH_PACKAGES, LISTS, OVERLAYS; optional EXTRA_IMAGE_NAME, ROOTFS_PARTSIZE,
-# SINGBOX_BUILD_TAGS + SINGBOX_GOARCH
+# TARGET, PROFILE, ARCH_PACKAGES, LISTS, OVERLAYS; optional EXTRA_IMAGE_NAME, ROOTFS_PARTSIZE
 . "$IMAGE_DIR/image.env"
-# OPENWRT_VERSION; optional SINGBOX_TAG + SINGBOX_COMMIT or SINGBOX_IPK_SHA256, AWG_TAG + *_SHA256
+# OPENWRT_VERSION; optional AWG_TAG + *_SHA256
 . "$IMAGE_DIR/versions.env"
 WORK_DIR=${WORK_DIR:-$REPO_DIR/.build/$IMAGE}
 OUT_DIR=$WORK_DIR/out
-rm -rf "$OUT_DIR" "$WORK_DIR/sing-box.bin"
+rm -rf "$OUT_DIR"
 mkdir -p "$WORK_DIR" "$OUT_DIR"
 
-SB_INFO=none
-if [ -n "${SINGBOX_TAG:-}" ] && [ -n "${SINGBOX_BUILD_TAGS:-}" ]; then
-    echo "==> sing-box $SINGBOX_TAG from source (slim: $SINGBOX_BUILD_TAGS) for $SINGBOX_GOARCH"
-    SB_SRC=$WORK_DIR/sing-box-src
-    rm -rf "$SB_SRC"
-    git clone -q --depth 1 -b "$SINGBOX_TAG" https://github.com/SagerNet/sing-box.git "$SB_SRC"
-    [ "$(git -C "$SB_SRC" rev-parse HEAD)" = "$SINGBOX_COMMIT" ] || { echo "sing-box $SINGBOX_TAG is not commit $SINGBOX_COMMIT"; exit 1; }
-    SB_VERSION="${SINGBOX_TAG#v}-slim"
-    (cd "$SB_SRC" && GOOS=linux GOARCH=$SINGBOX_GOARCH CGO_ENABLED=0 go build -trimpath \
-        -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=$SB_VERSION' $(cat release/LDFLAGS) -s -w -buildid=" \
-        -tags "$SINGBOX_BUILD_TAGS" -o "$WORK_DIR/sing-box.bin" ./cmd/sing-box)
-    SB_INFO="$SINGBOX_TAG ($SINGBOX_COMMIT), tags $SINGBOX_BUILD_TAGS, $(go version)"
-elif [ -n "${SINGBOX_TAG:-}" ]; then
-    # The upstream release build, binary only: the OpenWrt sing-box package in the lists provides the
-    # init script and UCI config, and the overlay replaces its /usr/bin/sing-box.
-    SB_IPK=sing-box_${SINGBOX_TAG#v}_openwrt_$ARCH_PACKAGES.ipk
-    echo "==> sing-box $SINGBOX_TAG upstream build ($SB_IPK)"
-    SB_DIR=$WORK_DIR/sing-box-ipk
-    rm -rf "$SB_DIR"
-    mkdir -p "$SB_DIR"
-    curl -fsSL -o "$SB_DIR/$SB_IPK" "https://github.com/SagerNet/sing-box/releases/download/$SINGBOX_TAG/$SB_IPK"
-    echo "$SINGBOX_IPK_SHA256  $SB_DIR/$SB_IPK" | sha256sum -c -
-    # An .ipk is a gzip'd outer tar holding control.tar.gz + data.tar.gz + debian-binary
-    tar -xzf "$SB_DIR/$SB_IPK" -C "$SB_DIR" data.tar.gz
-    tar -xzf "$SB_DIR/data.tar.gz" -C "$SB_DIR" ./usr/bin/sing-box
-    mv "$SB_DIR/usr/bin/sing-box" "$WORK_DIR/sing-box.bin"
-    SB_INFO="$SINGBOX_TAG upstream $SB_IPK ($SINGBOX_IPK_SHA256)"
+PACKAGES=$(for l in $LISTS; do cat "$REPO_DIR/lists/$l.txt"; done | cat - "$IMAGE_DIR/packages.txt" \
+    | grep -v -E '^\s*(#|$)' | tr '\n' ' ')
+OWN_PACKAGES=
+OWN_DIRS=
+for p in $PACKAGES; do
+    d=$(grep -l -x "define Package/$p" "$REPO_DIR"/packages/*/Makefile 2>/dev/null | head -n 1) || true
+    [ -n "$d" ] || continue
+    OWN_PACKAGES="$OWN_PACKAGES $p"
+    d=$(basename "$(dirname "$d")")
+    case " $OWN_DIRS " in *" $d "*) ;; *) OWN_DIRS="$OWN_DIRS $d" ;; esac
+done
+
+OWN_APKS=$WORK_DIR/own-packages
+rm -rf "$OWN_APKS"
+mkdir -p "$OWN_APKS"
+if [ -n "$OWN_PACKAGES" ]; then
+    echo "==> SDK $OPENWRT_VERSION $TARGET:$OWN_PACKAGES"
+    SDK_BASE=https://downloads.openwrt.org/releases/$OPENWRT_VERSION/targets/$TARGET
+    SDK_FILE=$(curl -fsSL "$SDK_BASE/sha256sums" | tee "$WORK_DIR/sdk.sha256sums" \
+        | sed -n 's/^[0-9a-f]* \*\(openwrt-sdk-.*\.Linux-x86_64\.tar\.zst\)$/\1/p')
+    SDK_DIR=$WORK_DIR/${SDK_FILE%.tar.zst}
+    if [ ! -d "$SDK_DIR" ]; then
+        curl -fsSL -o "$WORK_DIR/$SDK_FILE" "$SDK_BASE/$SDK_FILE"
+        (cd "$WORK_DIR" && grep " \*$SDK_FILE\$" sdk.sha256sums | sha256sum -c -)
+        tar --zstd -xf "$WORK_DIR/$SDK_FILE" -C "$WORK_DIR"
+        rm -f "$WORK_DIR/$SDK_FILE"
+    fi
+    # The release's pinned packages feed (Go and its build rules) plus packages/ as the feed "own"
+    { grep '^src-git packages ' "$SDK_DIR/feeds.conf.default"; echo "src-link own $REPO_DIR/packages"; } > "$SDK_DIR/feeds.conf"
+    (cd "$SDK_DIR" && ./scripts/feeds update packages own && ./scripts/feeds install -p own $OWN_PACKAGES)
+    {
+        echo '# CONFIG_ALL is not set'
+        echo '# CONFIG_ALL_KMODS is not set'
+        echo '# CONFIG_ALL_NONSHARED is not set'
+        for p in $OWN_PACKAGES; do echo "CONFIG_PACKAGE_$p=m"; done
+        if command -v go >/dev/null; then
+            echo "CONFIG_GOLANG_EXTERNAL_BOOTSTRAP_ROOT=\"$(go env GOROOT)\""
+        fi
+    } > "$SDK_DIR/.config"
+    make -C "$SDK_DIR" defconfig
+    for d in $OWN_DIRS; do
+        make -C "$SDK_DIR" "package/$d/compile" -j"$(nproc)" || make -C "$SDK_DIR" "package/$d/compile" -j1 V=s
+    done
+    LOCAL_INFO=
+    for p in $OWN_PACKAGES; do
+        f=$(ls "$SDK_DIR/bin/packages/$ARCH_PACKAGES/own/$p"-[0-9]*.apk)
+        cp "$f" "$OWN_APKS/"
+        LOCAL_INFO="$LOCAL_INFO $(basename "$f" .apk)"
+    done
+    LOCAL_INFO="${LOCAL_INFO# } ($SDK_FILE)"
+else
+    LOCAL_INFO=none
 fi
 
 echo "==> ImageBuilder $OPENWRT_VERSION $TARGET"
@@ -82,6 +106,14 @@ if [ -n "${AWG_TAG:-}" ]; then
     done
     AWG_INFO="awg-openwrt $AWG_TAG (kmod $AWG_KMOD_SHA256, tools $AWG_TOOLS_SHA256)"
 fi
+for p in $(ls "$REPO_DIR"/packages/*/Makefile 2>/dev/null | xargs -r sed -n 's|^define Package/\([^/]*\)$|\1|p'); do
+    rm -f "$WORK_DIR/$IB_NAME/packages/$p"-[0-9]*.apk
+done
+if [ -n "$OWN_PACKAGES" ]; then
+    echo "==> own packages into the ImageBuilder's local repository"
+    mkdir -p "$WORK_DIR/$IB_NAME/packages"
+    cp "$OWN_APKS"/*.apk "$WORK_DIR/$IB_NAME/packages/"
+fi
 rm -f "$WORK_DIR/$IB_NAME/packages/packages.adb"   # re-indexed by the image build
 
 echo "==> overlay files: $OVERLAYS + images/$IMAGE/files"
@@ -92,11 +124,8 @@ for o in $OVERLAYS; do
     rsync -a "$REPO_DIR/overlays/$o/" "$FILES/"
 done
 [ -d "$IMAGE_DIR/files" ] && rsync -a "$IMAGE_DIR/files/" "$FILES/"
-[ -f "$WORK_DIR/sing-box.bin" ] && install -D -m 0755 "$WORK_DIR/sing-box.bin" "$FILES/usr/bin/sing-box"
 
 echo "==> image"
-PACKAGES=$(for l in $LISTS; do cat "$REPO_DIR/lists/$l.txt"; done | cat - "$IMAGE_DIR/packages.txt" \
-    | grep -v -E '^\s*(#|$)' | tr '\n' ' ')
 # Only the options the image sets: an empty ROOTFS_PARTSIZE= still changes the image build
 make -C "$WORK_DIR/$IB_NAME" image PROFILE="$PROFILE" PACKAGES="$PACKAGES" FILES="$FILES" BIN_DIR="$OUT_DIR" \
     ${EXTRA_IMAGE_NAME:+EXTRA_IMAGE_NAME="$EXTRA_IMAGE_NAME"} ${ROOTFS_PARTSIZE:+ROOTFS_PARTSIZE="$ROOTFS_PARTSIZE"}
@@ -104,13 +133,19 @@ if ls "$OUT_DIR" | grep -F -- "$OPENWRT_VERSION"; then
     echo "the version is still in these file names"
     exit 1
 fi
+# The feeds can carry a package of the same name: the image must have ours
+for f in "$OWN_APKS"/*.apk; do
+    [ -e "$f" ] || continue
+    v=$("$WORK_DIR/$IB_NAME/staging_dir/host/bin/apk" adbdump "$f" | awk '$1 == "name:" {n=$2} $1 == "version:" {print n " - " $2; exit}')
+    grep -q -x -F -- "$v" "$OUT_DIR"/*.manifest || { echo "the image doesn't have our $v"; exit 1; }
+done
 
 {
     echo "image: $IMAGE"
     echo "openwrt: $OPENWRT_VERSION $TARGET $PROFILE${ROOTFS_PARTSIZE:+, rootfs ${ROOTFS_PARTSIZE} MB}"
     echo "lists: ${LISTS:-none}; overlays: $OVERLAYS"
     echo "packages: $PACKAGES"
-    echo "sing-box: $SB_INFO"
+    echo "own packages: $LOCAL_INFO"
     echo "amneziawg: $AWG_INFO"
     echo "repo: $(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 } > "$OUT_DIR/BUILDINFO"
