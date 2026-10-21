@@ -4,7 +4,7 @@ zerotier
 # AmneziaWG: added to the ImageBuilder's local repository by build.sh (awg-openwrt release, pinned sha256)
 kmod-amneziawg
 amneziawg-tools
-git
+etcgit
 openssh-client
 ca-bundle
 vim
