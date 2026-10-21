@@ -7,7 +7,7 @@
 # Runs the same on a workstation and in GitHub Actions (.github/workflows/build.yml).
 # Needs: git, curl, rsync, zstd, the ImageBuilder and SDK prerequisites (make, gawk, patch, ...) and, for
 # packages in Go, go to bootstrap the SDK's Go (without it the SDK builds its own bootstrap chain).
-# Output: .build/<image>/out with the images, manifest, sha256sums and BUILDINFO.
+# Output: .build/<image>/out with the images, manifest, sha256sums, BUILDINFO and the packages from packages/.
 set -euo pipefail
 
 REPO_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -141,6 +141,7 @@ for f in "$OWN_APKS"/*.apk; do
     [ -e "$f" ] || continue
     v=$("$WORK_DIR/$IB_NAME/staging_dir/host/bin/apk" adbdump "$f" | awk '$1 == "name:" {n=$2} $1 == "version:" {print n " - " $2; exit}')
     grep -q -x -F -- "$v" "$OUT_DIR"/*.manifest || { echo "the image doesn't have our $v"; exit 1; }
+    cp "$f" "$OUT_DIR/"
 done
 
 {

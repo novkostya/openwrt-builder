@@ -65,10 +65,11 @@ jobs:
       if: github.ref_name == github.event.repository.default_branch
       run: |
         cd .build/$IMAGE/out
-        # what gets installed, plus what identifies the build; not the rootfs tarballs or bare kernels
+        # what gets installed (images, own packages), plus what identifies the build; not the rootfs tarballs
+        # or bare kernels
         gh release create "${{ steps.tag.outputs.tag }}" --target "$GITHUB_SHA" --latest=false \
           --title "${{ steps.tag.outputs.tag }}" --notes-file ../RELEASE.md \
-          $(ls | grep -E 'combined(-efi)?\.img\.gz$|sysupgrade\.bin$|factory\.bin$|\.manifest$|^sha256sums$|^BUILDINFO$')
+          $(ls | grep -E 'combined(-efi)?\.img\.gz$|sysupgrade\.bin$|factory\.bin$|\.manifest$|\.apk$|^sha256sums$|^BUILDINFO$')
 
     - name: Remove old releases of this image
       if: github.ref_name == github.event.repository.default_branch
