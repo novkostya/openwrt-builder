@@ -1,0 +1,8 @@
+# rescue only, on top of lists/x86-vm.txt: a Wi-Fi client.
+kmod-iwlwifi
+iwlwifi-firmware-be200
+wpa-supplicant-mbedtls
+iw
+less
+-ppp
+-ppp-mod-pppoe

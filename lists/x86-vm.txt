@@ -1,0 +1,3 @@
+# Any image that runs as a Proxmox VM: the guest agent, for clean shutdowns from the host
+# (enabled by overlays/x86-vm/etc/rc.d/S99qemu-ga).
+qemu-ga

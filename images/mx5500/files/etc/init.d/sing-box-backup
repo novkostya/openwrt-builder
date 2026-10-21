@@ -1,0 +1,16 @@
+#!/bin/sh /etc/rc.common
+# Backup sing-box (a Hysteria2 Realms inbound) that stands in for the primary router's while this AP is the gateway.
+# Never started at boot: keepalived's notify script starts it while this AP is the VRRP master.
+# No START/STOP on purpose, so neither ImageBuilder nor `enable` can add rc.d links for it.
+
+USE_PROCD=1
+
+start_service() {
+	mkdir -p /tmp/sing-box-backup
+	procd_open_instance
+	procd_set_param command /usr/bin/sing-box run -c /etc/sing-box-backup/config.json -D /tmp/sing-box-backup
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}

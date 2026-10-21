@@ -1,0 +1,3 @@
+# asf only, on top of lists/x86-vm.txt and lists/x86-router.txt. Its WAN is PPPoE, which comes with the
+# ImageBuilder defaults.
+haproxy

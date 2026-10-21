@@ -1,0 +1,41 @@
+#!/bin/sh
+set -e
+
+BASE="/overlay/upper/etc"
+ROM_BASE="/rom/etc"
+
+[ -d "$BASE" ] || exit 0
+[ -d "$ROM_BASE" ] || exit 0
+
+find "$BASE" \( -type f -o -type l \) | while read -r f; do
+    case "$f" in
+        "$BASE/.git"|"$BASE/.git/"*) continue ;;
+    esac
+
+    rel="${f#$BASE}"
+    rom="$ROM_BASE$rel"
+
+    if [ -L "$f" ]; then
+        # same link as in ROM, e.g. rc.d links recreated by "/etc/init.d/<svc> enable"
+        if [ -L "$rom" ] && [ "$(readlink "$f")" = "$(readlink "$rom")" ]; then
+            rm -f -- "$f"
+        fi
+    elif [ -f "$rom" ] && cmp -s "$f" "$rom"; then
+        rm -f -- "$f"
+    fi
+done
+
+find "$BASE" -depth -type d | while read -r d; do
+    case "$d" in
+        "$BASE"|"$BASE/.git"|"$BASE/.git/"*) continue ;;
+    esac
+
+    rel="${d#$BASE}"
+    rom="$ROM_BASE$rel"
+
+    [ -d "$rom" ] && continue
+
+    rmdir "$d" 2>/dev/null || true
+done
+
+exit 0

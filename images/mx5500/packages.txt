@@ -1,0 +1,15 @@
+# mx5500 only, on top of the ImageBuilder defaults (which leave out LuCI).
+keepalived
+tailscale
+git
+less
+terminfo
+iputils-arping
+# ethtool: UDP GRO forwarding on the WAN port for Tailscale (overlays/tailscale/etc/hotplug.d/iface/40-udp-gro-forwarding)
+ethtool
+# AmneziaWG: the AP takes over the primary router's AWG tunnel while it holds the VRRP address. Added to
+# the ImageBuilder's local repository by build.sh (awg-openwrt release, pinned sha256).
+kmod-amneziawg
+amneziawg-tools
+-ppp
+-ppp-mod-pppoe

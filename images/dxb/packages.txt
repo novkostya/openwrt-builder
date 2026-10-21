@@ -1,0 +1,5 @@
+# dxb only, on top of lists/x86-vm.txt and lists/x86-router.txt.
+keepalived
+# its WAN is DHCP
+-ppp
+-ppp-mod-pppoe

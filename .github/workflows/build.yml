@@ -1,0 +1,81 @@
+name: Build image
+
+# Builds one image with ./build.sh. On the default branch it publishes a release tagged
+# <image>_<openwrt version>_<UTC date-time>, never marked latest (install by tag), and keeps the newest 5
+# per image. On any other branch the build is uploaded as an artifact instead.
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Image (a directory in images/)
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      IMAGE: ${{ inputs.image }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+
+    - name: Check the image; does it build sing-box from source?
+      id: needs
+      run: |
+        case "$IMAGE" in ''|*[!a-z0-9-]*) echo "bad image name: $IMAGE"; exit 1 ;; esac
+        [ -f "images/$IMAGE/image.env" ] || { echo "no such image: $IMAGE"; exit 1; }
+        . "images/$IMAGE/image.env"
+        echo "go=${SINGBOX_BUILD_TAGS:+true}" >> $GITHUB_OUTPUT
+
+    - name: Set up Go
+      if: steps.needs.outputs.go == 'true'
+      uses: actions/setup-go@v7
+      with:
+        go-version: '1.26'
+        cache: false
+
+    - name: ImageBuilder prerequisites
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo apt-get -qq update
+        sudo apt-get -qq install build-essential gawk gettext libncurses-dev python3 rsync unzip zstd file wget patch xz-utils
+
+    - name: Build
+      run: ./build.sh "$IMAGE"
+
+    - name: Release tag and notes
+      id: tag
+      run: |
+        . images/$IMAGE/versions.env
+        echo "tag=${IMAGE}_${OPENWRT_VERSION}_$(date -u +%Y.%m.%d-%H%M)" >> $GITHUB_OUTPUT
+        { echo '```'; cat .build/$IMAGE/out/BUILDINFO; echo; cat .build/$IMAGE/out/sha256sums; echo '```'; } > .build/$IMAGE/RELEASE.md
+
+    - name: Upload test build
+      if: github.ref_name != github.event.repository.default_branch
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ steps.tag.outputs.tag }}
+        path: .build/${{ inputs.image }}/out
+        retention-days: 7
+
+    - name: Release
+      if: github.ref_name == github.event.repository.default_branch
+      run: |
+        cd .build/$IMAGE/out
+        # what gets installed, plus what identifies the build; not the rootfs tarballs or bare kernels
+        gh release create "${{ steps.tag.outputs.tag }}" --target "$GITHUB_SHA" --latest=false \
+          --title "${{ steps.tag.outputs.tag }}" --notes-file ../RELEASE.md \
+          $(ls | grep -E 'combined(-efi)?\.img\.gz$|sysupgrade\.bin$|factory\.bin$|\.manifest$|^sha256sums$|^BUILDINFO$')
+
+    - name: Remove old releases of this image
+      if: github.ref_name == github.event.repository.default_branch
+      run: |
+        gh release list --limit 200 --json tagName,createdAt \
+          --jq "[.[] | select(.tagName | startswith(\"${IMAGE}_\"))] | sort_by(.createdAt) | reverse | .[5:] | .[].tagName" \
+        | while read -r t; do gh release delete "$t" --yes --cleanup-tag; done

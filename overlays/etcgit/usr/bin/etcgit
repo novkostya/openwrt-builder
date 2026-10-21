@@ -1,0 +1,171 @@
+#!/bin/sh
+# etcgit — Git wrapper for OpenWrt upperdir only
+# Repo & worktree: /overlay/upper/etc
+
+set -e
+
+ETC="/overlay/upper/etc"
+
+need_git() { command -v git >/dev/null 2>&1 || { echo "git not found"; exit 1; }; }
+ensure_dir() { [ -d "$ETC" ] || mkdir -p "$ETC"; }
+
+# overlayfs/VFS can go "stale" after working-tree mutations (reset/checkout/clean/pull/...),
+# so processes may briefly see a mismatch between what's on disk and the merged /etc.
+# Best-effort flush: sync + drop dentries/inodes/pagecache so the overlay re-reads the upperdir.
+#
+# NOTE: this is only a VFS cache-drop, not an overlayfs reconciliation. Because git operates on the
+# upperdir directly, it cannot create/remove overlay whiteouts or opaque markers: deleting a file
+# that also exists in /rom/etc merely unlinks the upper copy, so the read-only ROM default reappears
+# in the merged view. That class of drift is a design limitation a flush cannot fix.
+overlayfs_drop_caches() {
+  sync >/dev/null 2>&1 || true
+  if [ -w /proc/sys/vm/drop_caches ]; then
+    echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+  fi
+}
+
+# Return 0 if we should flush caches after this git invocation.
+#
+# Strategy: flush after ANY subcommand that can touch the working tree -- i.e. everything except a
+# known-safe read-only / index-only / history-only set. drop_caches is cheap and idempotent, so
+# over-flushing is harmless, whereas *under*-flushing leaves the overlay stale. So we fail safe and
+# flush by default: any subcommand we don't explicitly recognise as safe (including new ones and
+# ones behind a mis-parsed option) still gets a flush.
+needs_overlayfs_flush() {
+  cmd=""
+  skip_val=0
+
+  # Isolate the git subcommand, skipping global options *and* the separate-word value of options
+  # that take one (e.g. `-c core.fileMode=false`, `-C /dir`), which would otherwise be mistaken for
+  # the subcommand and let a real worktree mutation slip through unflushed.
+  for arg in "$@"; do
+    if [ "$skip_val" -eq 1 ]; then skip_val=0; continue; fi
+    case "$arg" in
+      --) break ;;
+      -c|-C|--git-dir|--work-tree|--namespace|--exec-path) skip_val=1; continue ;;
+      -*) continue ;;
+      *)  cmd="$arg"; break ;;
+    esac
+  done
+
+  [ -n "$cmd" ] || return 1
+
+  case "$cmd" in
+    # Read-only: these write neither the working tree nor .git, so no flush.
+    # (Keeps the interactive-login banner's git calls cheap.)
+    status|diff|log|show|reflog|shortlog|whatchanged|describe|blame|grep|\
+    rev-parse|rev-list|symbolic-ref|for-each-ref|show-ref|ls-files|ls-tree|ls-remote|\
+    cat-file|diff-tree|diff-index|diff-files|name-rev|var|version|help|\
+    fsck|count-objects|verify-commit|verify-tag)
+      return 1
+      ;;
+    *)
+      # Everything else writes the working tree or .git -- checkout, reset, merge, stash, ... but
+      # also commit, add, fetch, push, branch, tag, config, gc: those rewrite refs, the index or
+      # config inside /etc/.git. Left unflushed, the merged /etc view keeps serving the old files,
+      # and sysupgrade's config backup (which reads /etc/.git through the overlay) captured a
+      # stale refs/heads/master once. So flush.
+      return 0
+      ;;
+  esac
+}
+
+setup_git_config() {
+  git -C "$ETC" config user.name  >/dev/null || git -C "$ETC" config user.name "etcgit"
+  git -C "$ETC" config user.email >/dev/null || git -C "$ETC" config user.email "root@openwrt"
+  git -C "$ETC" config core.worktree "$ETC"
+}
+
+cmd_init() {
+  # etcgit init [remote-url]
+  need_git; ensure_dir
+  if [ ! -d "$ETC/.git" ]; then
+    ( cd "$ETC" && git init )
+    [ -f "$ETC/.gitignore" ] || cat <<EOF >"$ETC/.gitignore"
+board.json
+urandom.seed
+passwd-
+shadow-
+gshadow-
+*.opkg-*
+opkg-lists/
+.uci-*
+*~
+*.swp
+*.
+EOF
+    setup_git_config
+    git -C "$ETC" add -A
+    git -C "$ETC" commit -m "etcgit: initial snapshot" || true
+  fi
+  if [ -n "$1" ]; then
+    if git -C "$ETC" remote | grep -qx origin; then
+      git -C "$ETC" remote set-url origin "$1"
+    else
+      git -C "$ETC" remote add origin "$1"
+    fi
+  fi
+  echo "Initialized repo for /etc configs"
+}
+
+cmd_import() {
+  # etcgit import <remote-url>
+  need_git; ensure_dir
+  REMOTE="$1"
+  [ -n "$REMOTE" ] || { echo "usage: etcgit import <remote-url>"; exit 1; }
+
+  TMP="$(mktemp -d /tmp/etcgit.XXXXXX)"
+  # shallow clone to tmp so origin/HEAD is set by git itself
+  git clone --depth=1 "$REMOTE" "$TMP"
+
+  # nuke current upperdir content (including dotfiles) and replace with clone
+  mv "$TMP/.git" "$ETC/"
+  setup_git_config
+  git -C "$ETC" reset
+  overlayfs_drop_caches
+  echo "Imported configs into /etc from $REMOTE"
+
+  if [ -n "$(git -C "$ETC" status --porcelain 2>/dev/null || true)" ]; then
+    echo
+    echo "⚠ Uncommitted changes in /etc"
+    git -C "$ETC" status -sb 2>/dev/null | sed 's/^/   /'
+    # Show a concise diff summary (avoid flooding the terminal)
+    diffstat="$(etcgit --no-pager diff --stat 2>/dev/null || true)"
+    [ -n "$diffstat" ] && { echo; echo "$diffstat" | sed 's/^/   /'; }
+    echo "→ Review the diff and either etcgit commit or etcgit reset"
+  fi
+
+  # cleanup
+  rm -rf "$TMP"
+
+  echo "⚠️  Reboot is strongly recommended now so all services reload new configs."
+}
+
+usage() {
+  cat <<EOF
+etcgit — Git wrapper for /etc configs
+
+Commands:
+  init [remote-url]   Initialize repo (optional: set origin)
+  import <remote-url> Fetch configs into /etc from remote (via tmp clone)
+
+All other args are proxied to: git -C /overlay/upper/etc <args>
+Examples:
+  etcgit status
+  etcgit add -A && etcgit commit -m "tweak configs"
+  etcgit push origin main
+EOF
+}
+
+case "$1" in
+  init) shift; cmd_init "$@";;
+  import) shift; cmd_import "$@";;
+  ""|help|-h|--help) usage;;
+  *)
+    need_git; ensure_dir
+    git -C "$ETC" "$@"
+    if needs_overlayfs_flush "$@"; then
+      overlayfs_drop_caches
+    fi
+    ;;
+esac
