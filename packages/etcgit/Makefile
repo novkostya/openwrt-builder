@@ -15,8 +15,8 @@ define Package/etcgit
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=Git for /etc, tracking what differs from the image
-  # A runtime dependency only: DEPENDS would make the SDK build git, which it can't
-  EXTRA_DEPENDS:=git
+  # A runtime dependency only: DEPENDS would make the SDK build git, which it can't; it must name a version
+  EXTRA_DEPENDS:=git (>=2.0)
   PKGARCH:=all
 endef
 
