@@ -100,7 +100,7 @@ cmd_migrate() {
   drop_caches
   mv /etc/.git "$REPO"
   setup_repo
-  # The pre-package banner, kept by sysupgrade (base-files keeps /etc/profile.d), hides the stub
+  # sysupgrade kept the old banner, which hides the package's
   rm -f "$UPPER/profile.d/99-etcgit-banner.sh"
   drop_caches
   echo "Moved /etc/.git to $REPO"
@@ -121,7 +121,6 @@ cmd_status() {
 }
 
 cmd_banner() {
-  # Tips and warnings for the login shell (/etc/profile.d/99-etcgit-banner.sh)
   if [ -d "$LEGACY" ] && [ ! -d "$REPO" ]; then
     echo
     echo "⚠ etcgit's repo is still in $LEGACY"

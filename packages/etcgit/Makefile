@@ -1,9 +1,7 @@
-# etcgit: /etc under git on a running router (files/etcgit), with its login banner, the boot-time
-# clean-overlay and what sysupgrade needs to keep the repo.
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=etcgit
-# The date of the last change; bump it (or PKG_RELEASE for a second change that day) with every change
+# Date of the last change; PKG_RELEASE counts changes on the same day
 PKG_VERSION:=2026.10.21
 PKG_RELEASE:=2
 
@@ -15,7 +13,7 @@ define Package/etcgit
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=Git for /etc, tracking what differs from the image
-  # A runtime dependency only: DEPENDS would make the SDK build git, which it can't; it must name a version
+  # Runtime only: DEPENDS would make the SDK build git, which fails there
   EXTRA_DEPENDS:=git (>=2.0)
   PKGARCH:=all
 endef
@@ -25,7 +23,7 @@ define Package/etcgit/description
   but aren't tracked. clean-overlay removes files from the overlay that match the image at boot.
 endef
 
-# Not installed by the package, so the build lists them in /lib/upgrade/keep.d/etcgit for sysupgrade
+# Not installed, so the build lists them in /lib/upgrade/keep.d/etcgit
 define Package/etcgit/conffiles
 /root/.etcgit/
 /root/.ssh/
