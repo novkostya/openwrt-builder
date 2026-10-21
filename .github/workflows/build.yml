@@ -1,8 +1,8 @@
 name: Build image
 
 # Builds one image with ./build.sh. On the default branch it publishes a release tagged
-# <image>_<openwrt version>_<UTC date-time>, never marked latest (install by tag), and keeps the newest 5
-# per image. On any other branch the build is uploaded as an artifact instead.
+# <image>_<openwrt version>_<UTC date-time> and keeps the newest 5 per image. Install by tag: GitHub's
+# "latest" release can be any image. On any other branch the build is uploaded as an artifact instead.
 on:
   workflow_dispatch:
     inputs:
