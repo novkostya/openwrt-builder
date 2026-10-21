@@ -9,8 +9,8 @@ A router that has been tweaked by hand for years can't be rebuilt when it dies. 
 things that can be recreated at any time:
 
 - an image, built by this repo from pinned versions with the official OpenWrt ImageBuilder;
-- its `/etc`, kept in a private git repo per device. `etcgit` versions it live on the device and tracks
-  only the files that differ from the image.
+- its `/etc`, kept in a private git repo per device. `etcgit` versions it live on the device: it tracks
+  only the files you add, and lists the ones that differ from the image but aren't tracked.
 
 Rebuilding a device means flashing the image, importing its `/etc` and rebooting.
 
@@ -38,7 +38,8 @@ The Build image workflow runs the same script on GitHub Actions and publishes ea
 ## Installing
 
 - Upgrades use `sysupgrade`, keeping settings. Afterwards `etcgit status` shows what needs attention:
-  files the upgrade didn't keep appear as deleted, and stale defaults from the old image as untracked.
+  files the upgrade didn't keep appear as deleted or changed, and stale defaults from the old image as
+  differing from the image but not tracked.
 - A fresh install boots with OpenWrt's defaults, minus the DHCP server and router advertisements, so it
   can sit on a live network until its `/etc` is imported
   ([99-safe-first-boot](overlays/base/etc/uci-defaults/99-safe-first-boot)).

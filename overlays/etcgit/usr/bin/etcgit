@@ -1,87 +1,45 @@
 #!/bin/sh
-# etcgit — Git wrapper for OpenWrt upperdir only
-# Repo & worktree: /overlay/upper/etc
+# etcgit — Git wrapper for /etc
+# Repo: /root/.etcgit, work tree: /etc. "*" in info/exclude, so only files added with "add -f" are
+# tracked; "etcgit status" also lists the files that differ from the image but aren't tracked.
 
 set -e
 
-ETC="/overlay/upper/etc"
+REPO="/root/.etcgit"
+UPPER="/overlay/upper/etc"
+LEGACY="$UPPER/.git"   # the repo used to be the overlay's upper /etc; "etcgit migrate" moves it
 
 need_git() { command -v git >/dev/null 2>&1 || { echo "git not found"; exit 1; }; }
-ensure_dir() { [ -d "$ETC" ] || mkdir -p "$ETC"; }
+g() { git --git-dir="$REPO" --work-tree=/etc "$@"; }
 
-# overlayfs/VFS can go "stale" after working-tree mutations (reset/checkout/clean/pull/...),
-# so processes may briefly see a mismatch between what's on disk and the merged /etc.
-# Best-effort flush: sync + drop dentries/inodes/pagecache so the overlay re-reads the upperdir.
-#
-# NOTE: this is only a VFS cache-drop, not an overlayfs reconciliation. Because git operates on the
-# upperdir directly, it cannot create/remove overlay whiteouts or opaque markers: deleting a file
-# that also exists in /rom/etc merely unlinks the upper copy, so the read-only ROM default reappears
-# in the merged view. That class of drift is a design limitation a flush cannot fix.
-overlayfs_drop_caches() {
-  sync >/dev/null 2>&1 || true
-  if [ -w /proc/sys/vm/drop_caches ]; then
-    echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
-  fi
+# Files in the overlay's upper /etc (changed from the image or new) that aren't tracked, minus .gitignore
+changed_untracked() {
+  [ -d "$UPPER" ] || return 0
+  ( cd "$UPPER" && git --git-dir="$REPO" --work-tree=. ls-files --others --exclude-per-directory=.gitignore )
 }
 
-# Return 0 if we should flush caches after this git invocation.
-#
-# Strategy: flush after ANY subcommand that can touch the working tree -- i.e. everything except a
-# known-safe read-only / index-only / history-only set. drop_caches is cheap and idempotent, so
-# over-flushing is harmless, whereas *under*-flushing leaves the overlay stale. So we fail safe and
-# flush by default: any subcommand we don't explicitly recognise as safe (including new ones and
-# ones behind a mis-parsed option) still gets a flush.
-needs_overlayfs_flush() {
-  cmd=""
-  skip_val=0
-
-  # Isolate the git subcommand, skipping global options *and* the separate-word value of options
-  # that take one (e.g. `-c core.fileMode=false`, `-C /dir`), which would otherwise be mistaken for
-  # the subcommand and let a real worktree mutation slip through unflushed.
-  for arg in "$@"; do
-    if [ "$skip_val" -eq 1 ]; then skip_val=0; continue; fi
-    case "$arg" in
-      --) break ;;
-      -c|-C|--git-dir|--work-tree|--namespace|--exec-path) skip_val=1; continue ;;
-      -*) continue ;;
-      *)  cmd="$arg"; break ;;
-    esac
-  done
-
-  [ -n "$cmd" ] || return 1
-
-  case "$cmd" in
-    # Read-only: these write neither the working tree nor .git, so no flush.
-    # (Keeps the interactive-login banner's git calls cheap.)
-    status|diff|log|show|reflog|shortlog|whatchanged|describe|blame|grep|\
-    rev-parse|rev-list|symbolic-ref|for-each-ref|show-ref|ls-files|ls-tree|ls-remote|\
-    cat-file|diff-tree|diff-index|diff-files|name-rev|var|version|help|\
-    fsck|count-objects|verify-commit|verify-tag)
-      return 1
-      ;;
-    *)
-      # Everything else writes the working tree or .git -- checkout, reset, merge, stash, ... but
-      # also commit, add, fetch, push, branch, tag, config, gc: those rewrite refs, the index or
-      # config inside /etc/.git. Left unflushed, the merged /etc view keeps serving the old files,
-      # and sysupgrade's config backup (which reads /etc/.git through the overlay) captured a
-      # stale refs/heads/master once. So flush.
-      return 0
-      ;;
-  esac
+setup_repo() {
+  g config user.name  >/dev/null || g config user.name "etcgit"
+  g config user.email >/dev/null || g config user.email "root@openwrt"
+  g config core.bare false
+  g config core.worktree /etc
+  mkdir -p "$REPO/info"
+  grep -qx '\*' "$REPO/info/exclude" 2>/dev/null || echo '*' >> "$REPO/info/exclude"
 }
 
-setup_git_config() {
-  git -C "$ETC" config user.name  >/dev/null || git -C "$ETC" config user.name "etcgit"
-  git -C "$ETC" config user.email >/dev/null || git -C "$ETC" config user.email "root@openwrt"
-  git -C "$ETC" config core.worktree "$ETC"
+check_free() {
+  [ ! -e "$REPO" ] || { echo "$REPO already exists"; exit 1; }
+  [ ! -d "$LEGACY" ] || { echo "$LEGACY exists: run etcgit migrate"; exit 1; }
 }
 
 cmd_init() {
   # etcgit init [remote-url]
-  need_git; ensure_dir
-  if [ ! -d "$ETC/.git" ]; then
-    ( cd "$ETC" && git init )
-    [ -f "$ETC/.gitignore" ] || cat <<EOF >"$ETC/.gitignore"
+  need_git
+  if [ ! -d "$REPO" ]; then
+    check_free
+    g init -q
+    setup_repo
+    [ -f /etc/.gitignore ] || cat <<EOF >/etc/.gitignore
 board.json
 urandom.seed
 passwd-
@@ -94,51 +52,66 @@ opkg-lists/
 *.swp
 *.
 EOF
-    setup_git_config
-    git -C "$ETC" add -A
-    git -C "$ETC" commit -m "etcgit: initial snapshot" || true
+    g add -f .gitignore
+    changed_untracked | while read -r f; do g add -f -- "$f"; done
+    g commit -q -m "etcgit: initial snapshot" || true
   fi
   if [ -n "$1" ]; then
-    if git -C "$ETC" remote | grep -qx origin; then
-      git -C "$ETC" remote set-url origin "$1"
+    if g remote | grep -qx origin; then
+      g remote set-url origin "$1"
     else
-      git -C "$ETC" remote add origin "$1"
+      g remote add origin "$1"
     fi
   fi
-  echo "Initialized repo for /etc configs"
+  echo "Initialized $REPO for /etc"
 }
 
 cmd_import() {
   # etcgit import <remote-url>
-  need_git; ensure_dir
+  need_git
   REMOTE="$1"
   [ -n "$REMOTE" ] || { echo "usage: etcgit import <remote-url>"; exit 1; }
+  check_free
 
   TMP="$(mktemp -d /tmp/etcgit.XXXXXX)"
-  # shallow clone to tmp so origin/HEAD is set by git itself
-  git clone --depth=1 "$REMOTE" "$TMP"
-
-  # nuke current upperdir content (including dotfiles) and replace with clone
-  mv "$TMP/.git" "$ETC/"
-  setup_git_config
-  git -C "$ETC" reset
-  overlayfs_drop_caches
-  echo "Imported configs into /etc from $REMOTE"
-
-  if [ -n "$(git -C "$ETC" status --porcelain 2>/dev/null || true)" ]; then
-    echo
-    echo "⚠ Uncommitted changes in /etc"
-    git -C "$ETC" status -sb 2>/dev/null | sed 's/^/   /'
-    # Show a concise diff summary (avoid flooding the terminal)
-    diffstat="$(etcgit --no-pager diff --stat 2>/dev/null || true)"
-    [ -n "$diffstat" ] && { echo; echo "$diffstat" | sed 's/^/   /'; }
-    echo "→ Review the diff and either etcgit commit or etcgit reset"
-  fi
-
-  # cleanup
+  # shallow clone so origin/HEAD is set by git itself; /etc stays untouched until you check out
+  git clone -q --depth=1 --no-checkout --separate-git-dir="$REPO" "$REMOTE" "$TMP"
   rm -rf "$TMP"
+  setup_repo
+  g reset -q
+  echo "Imported $REMOTE into $REPO"
 
-  echo "⚠️  Reboot is strongly recommended now so all services reload new configs."
+  if [ -n "$(g status --porcelain 2>/dev/null || true)" ]; then
+    echo
+    echo "⚠ /etc differs from the repo"
+    g status -sb 2>/dev/null | sed 's/^/   /'
+    echo "→ Review with etcgit diff, then etcgit checkout -- <files> (or etcgit reset --hard)"
+  fi
+  echo "⚠️  Reboot is strongly recommended after checking out, so all services reload their configs."
+}
+
+cmd_migrate() {
+  # Move a repo from the overlay's upper /etc to $REPO
+  need_git
+  [ -d "$LEGACY" ] || { echo "nothing to migrate: no $LEGACY"; exit 1; }
+  [ ! -e "$REPO" ] || { echo "$REPO already exists"; exit 1; }
+  mv /etc/.git "$REPO"
+  setup_repo
+  echo "Moved /etc/.git to $REPO"
+  echo "→ Check etcgit status, and drop /etc/.git, /etc/.gitignore and /root/.ssh/ from"
+  echo "  /etc/sysupgrade.conf: /lib/upgrade/keep.d/etcgit keeps them now"
+}
+
+cmd_status() {
+  g status "$@"
+  for a in "$@"; do
+    case "$a" in --porcelain*|-z|--null) return 0 ;; esac
+  done
+  list="$(changed_untracked)"
+  [ -n "$list" ] || return 0
+  echo
+  echo "Changed from the image, not tracked (etcgit add -f <file>, or list it in /etc/.gitignore):"
+  echo "$list" | sed 's/^/	/'
 }
 
 usage() {
@@ -147,12 +120,14 @@ etcgit — Git wrapper for /etc configs
 
 Commands:
   init [remote-url]   Initialize repo (optional: set origin)
-  import <remote-url> Fetch configs into /etc from remote (via tmp clone)
+  import <remote-url> Fetch a repo for /etc from remote (via tmp clone)
+  migrate             Move a repo from /overlay/upper/etc/.git to $REPO
+  changed             List files that differ from the image but aren't tracked
 
-All other args are proxied to: git -C /overlay/upper/etc <args>
-Examples:
+All other args are proxied to: git --git-dir=$REPO --work-tree=/etc <args>
+New files are ignored until added with -f. Examples:
   etcgit status
-  etcgit add -A && etcgit commit -m "tweak configs"
+  etcgit add -f config/foo && etcgit commit -m "tweak configs"
   etcgit push origin main
 EOF
 }
@@ -160,12 +135,15 @@ EOF
 case "$1" in
   init) shift; cmd_init "$@";;
   import) shift; cmd_import "$@";;
+  migrate) shift; cmd_migrate "$@";;
+  changed) need_git; changed_untracked;;
   ""|help|-h|--help) usage;;
   *)
-    need_git; ensure_dir
-    git -C "$ETC" "$@"
-    if needs_overlayfs_flush "$@"; then
-      overlayfs_drop_caches
+    need_git
+    if [ ! -d "$REPO" ] && [ -d "$LEGACY" ]; then
+      echo "etcgit: the repo is still in $LEGACY; run etcgit migrate before the next sysupgrade" >&2
+      exec git -C "$UPPER" "$@"
     fi
+    if [ "$1" = status ]; then shift; cmd_status "$@"; else g "$@"; fi
     ;;
 esac

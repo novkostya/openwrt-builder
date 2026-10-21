@@ -1,7 +1,15 @@
 # Show etcgit tips and warnings on interactive shells
 [ -t 1 ] || return 0
 
-if [ ! -d /overlay/upper/etc/.git ]; then
+if [ -d /overlay/upper/etc/.git ] && [ ! -d /root/.etcgit ]; then
+  echo
+  echo "⚠ etcgit's repo is still in /overlay/upper/etc/.git"
+  echo "→ Move it:  etcgit migrate"
+  echo
+  return 0
+fi
+
+if [ ! -d /root/.etcgit ]; then
   cat <<'BANNER'
 
  ┌─────────────────────────────────────────────────────────────┐
@@ -24,7 +32,7 @@ fi
 # Repo exists: show useful warnings
 branch="$(etcgit rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
 status_porcelain="$(etcgit status --porcelain 2>/dev/null || true)"
-status_short="$(etcgit status -sb 2>/dev/null || true)"
+changed="$(etcgit changed 2>/dev/null || true)"
 
 # Ahead/behind detection (only if upstream configured)
 upstream="$(etcgit rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || true)"
@@ -41,11 +49,19 @@ if [ -n "$status_porcelain" ]; then
   warned=1
   echo
   echo "⚠ Uncommitted changes in /etc (branch: $branch)"
-  echo "$status_short" | sed 's/^/   /'
+  echo "$status_porcelain" | sed 's/^/   /'
   # Show a concise diff summary (avoid flooding the terminal)
   diffstat="$(etcgit --no-pager diff --stat 2>/dev/null || true)"
   [ -n "$diffstat" ] && { echo; echo "$diffstat" | sed 's/^/   /'; }
-  echo "→ Commit/push:  etcgit add -A && etcgit commit -m \"...\" && etcgit push"
+  echo "→ Commit/push:  etcgit commit -a -m \"...\" && etcgit push"
+fi
+
+if [ -n "$changed" ]; then
+  [ "$warned" -eq 0 ] && echo
+  echo "⚠ Changed from the image, not tracked:"
+  echo "$changed" | sed 's/^/   /'
+  echo "→ Track:  etcgit add -f <file>, or list it in /etc/.gitignore"
+  warned=1
 fi
 
 if [ "$ahead" -gt 0 ]; then
@@ -63,4 +79,4 @@ if [ "$behind" -gt 0 ]; then
 fi
 
 [ "$warned" -eq 1 ] && echo
-unset branch status_porcelain status_short upstream ahead behind warned
+unset branch status_porcelain changed upstream ahead behind warned diffstat

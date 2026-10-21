@@ -1,8 +1,9 @@
 # Fresh install only: keep a new router from disturbing an existing LAN until its real /etc arrives
 # (etcgit import, or set by hand): no DHCP server, no router advertisements. Everything else stays
 # OpenWrt's default.
-# A sysupgrade that keeps settings brings back /etc/.git and runs uci-defaults again: leave that alone.
-[ -d /etc/.git ] && exit 0
+# A sysupgrade that keeps settings brings back etcgit's repo and runs uci-defaults again: leave that
+# alone. /etc/.git is the repo's old place.
+[ -d /root/.etcgit ] || [ -d /etc/.git ] && exit 0
 
 uci -q batch <<'EOT'
 set dhcp.lan.ignore='1'
