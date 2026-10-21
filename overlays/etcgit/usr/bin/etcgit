@@ -11,6 +11,8 @@ LEGACY="$UPPER/.git"   # the repo used to be the overlay's upper /etc; "etcgit m
 
 need_git() { command -v git >/dev/null 2>&1 || { echo "git not found"; exit 1; }; }
 g() { git --git-dir="$REPO" --work-tree=/etc "$@"; }
+# After writing to the old repo place behind overlayfs, so the merged /etc doesn't serve stale files
+drop_caches() { sync; { echo 3 > /proc/sys/vm/drop_caches; } 2>/dev/null || true; }
 
 # Files in the overlay's upper /etc (changed from the image or new) that aren't tracked, minus .gitignore
 changed_untracked() {
@@ -95,6 +97,7 @@ cmd_migrate() {
   need_git
   [ -d "$LEGACY" ] || { echo "nothing to migrate: no $LEGACY"; exit 1; }
   [ ! -e "$REPO" ] || { echo "$REPO already exists"; exit 1; }
+  drop_caches
   mv /etc/.git "$REPO"
   setup_repo
   echo "Moved /etc/.git to $REPO"
@@ -141,8 +144,10 @@ case "$1" in
   *)
     need_git
     if [ ! -d "$REPO" ] && [ -d "$LEGACY" ]; then
-      echo "etcgit: the repo is still in $LEGACY; run etcgit migrate before the next sysupgrade" >&2
-      exec git -C "$UPPER" "$@"
+      echo "etcgit: the repo is still in $LEGACY; run etcgit migrate" >&2
+      rc=0; git -C "$UPPER" "$@" || rc=$?
+      drop_caches
+      exit $rc
     fi
     if [ "$1" = status ]; then shift; cmd_status "$@"; else g "$@"; fi
     ;;
