@@ -100,6 +100,9 @@ cmd_migrate() {
   drop_caches
   mv /etc/.git "$REPO"
   setup_repo
+  # The pre-package banner, kept by sysupgrade (base-files keeps /etc/profile.d), hides the stub
+  rm -f "$UPPER/profile.d/99-etcgit-banner.sh"
+  drop_caches
   echo "Moved /etc/.git to $REPO"
   echo "→ Check etcgit status, and drop /etc/.git, /etc/.gitignore and /root/.ssh/ from"
   echo "  /etc/sysupgrade.conf: /lib/upgrade/keep.d/etcgit keeps them now"
@@ -117,6 +120,88 @@ cmd_status() {
   echo "$list" | sed 's/^/	/'
 }
 
+cmd_banner() {
+  # Tips and warnings for the login shell (/etc/profile.d/99-etcgit-banner.sh)
+  if [ -d "$LEGACY" ] && [ ! -d "$REPO" ]; then
+    echo
+    echo "⚠ etcgit's repo is still in $LEGACY"
+    echo "→ Move it:  etcgit migrate"
+    echo
+    return 0
+  fi
+
+  if [ ! -d "$REPO" ]; then
+    cat <<'BANNER'
+
+ ┌─────────────────────────────────────────────────────────────┐
+ │  /etc is not under git yet                                  │
+ │                                                             │
+ │  Initialize new repo:   etcgit init [REMOTE_URL]            │
+ │  Import from remote:    etcgit import <REMOTE_URL>          │
+ │                                                             │
+ │  Examples:                                                  │
+ │    etcgit init                                              │
+ │    etcgit import git@github.com:you/openwrt-etc.git         │
+ │                                                             │
+ │  Tip: put your SSH key at /root/.ssh/id_ed25519             │
+ └─────────────────────────────────────────────────────────────┘
+
+BANNER
+    return 0
+  fi
+
+  branch="$(g rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+  status_porcelain="$(g status --porcelain 2>/dev/null || true)"
+  changed="$(changed_untracked 2>/dev/null || true)"
+
+  # Ahead/behind detection (only if upstream configured)
+  upstream="$(g rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+  ahead="0"
+  behind="0"
+  if [ -n "$upstream" ]; then
+    counts="$(g rev-list --left-right --count "$upstream"...HEAD 2>/dev/null || echo "0 0")"
+    behind="${counts%%[[:space:]]*}"
+    ahead="${counts##*[[:space:]]}"
+  fi
+
+  warned=0
+  if [ -n "$status_porcelain" ]; then
+    warned=1
+    echo
+    echo "⚠ Uncommitted changes in /etc (branch: $branch)"
+    echo "$status_porcelain" | sed 's/^/   /'
+    # Show a concise diff summary (avoid flooding the terminal)
+    diffstat="$(g --no-pager diff --stat 2>/dev/null || true)"
+    [ -n "$diffstat" ] && { echo; echo "$diffstat" | sed 's/^/   /'; }
+    echo "→ Commit/push:  etcgit commit -a -m \"...\" && etcgit push"
+  fi
+
+  if [ -n "$changed" ]; then
+    [ "$warned" -eq 0 ] && echo
+    echo "⚠ Changed from the image, not tracked:"
+    echo "$changed" | sed 's/^/   /'
+    echo "→ Track:  etcgit add -f <file>, or list it in /etc/.gitignore"
+    warned=1
+  fi
+
+  if [ "$ahead" -gt 0 ]; then
+    [ "$warned" -eq 0 ] && echo
+    echo "⚠ Local branch '$branch' is ahead of '$upstream' by $ahead commit(s)."
+    echo "→ Push:  etcgit push"
+    warned=1
+  fi
+
+  if [ "$behind" -gt 0 ]; then
+    [ "$warned" -eq 0 ] && echo
+    echo "⚠ Local branch '$branch' is behind '$upstream' by $behind commit(s)."
+    echo "→ Update:  etcgit pull --rebase"
+    warned=1
+  fi
+
+  [ "$warned" -eq 1 ] && echo
+  return 0
+}
+
 usage() {
   cat <<EOF
 etcgit — Git wrapper for /etc configs
@@ -126,6 +211,7 @@ Commands:
   import <remote-url> Fetch a repo for /etc from remote (via tmp clone)
   migrate             Move a repo from /overlay/upper/etc/.git to $REPO
   changed             List files that differ from the image but aren't tracked
+  banner              Show the login warnings
 
 All other args are proxied to: git --git-dir=$REPO --work-tree=/etc <args>
 New files are ignored until added with -f. Examples:
@@ -140,6 +226,7 @@ case "$1" in
   import) shift; cmd_import "$@";;
   migrate) shift; cmd_migrate "$@";;
   changed) need_git; changed_untracked;;
+  banner) command -v git >/dev/null 2>&1 && cmd_banner;;
   ""|help|-h|--help) usage;;
   *)
     need_git

@@ -5,7 +5,7 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=etcgit
 # The date of the last change; bump it (or PKG_RELEASE for a second change that day) with every change
 PKG_VERSION:=2026.10.21
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_LICENSE:=MIT
 
