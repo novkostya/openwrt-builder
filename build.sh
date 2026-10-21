@@ -58,11 +58,14 @@ if [ -n "$OWN_PACKAGES" ]; then
         echo '# CONFIG_ALL_KMODS is not set'
         echo '# CONFIG_ALL_NONSHARED is not set'
         for p in $OWN_PACKAGES; do echo "CONFIG_PACKAGE_$p=m"; done
+        # an installed Go builds the SDK's Go directly, skipping its bootstrap chain from Go 1.4
         if command -v go >/dev/null; then
+            echo '# CONFIG_GOLANG_BUILD_BOOTSTRAP is not set'
             echo "CONFIG_GOLANG_EXTERNAL_BOOTSTRAP_ROOT=\"$(go env GOROOT)\""
         fi
     } > "$SDK_DIR/.config"
     make -C "$SDK_DIR" defconfig
+    grep GOLANG_ "$SDK_DIR/.config" || true
     for d in $OWN_DIRS; do
         make -C "$SDK_DIR" "package/$d/compile" -j"$(nproc)" || make -C "$SDK_DIR" "package/$d/compile" -j1 V=s
     done
