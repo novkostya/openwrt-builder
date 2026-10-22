@@ -14,10 +14,19 @@ g() { git --git-dir="$REPO" --work-tree=/etc "$@"; }
 # After writing to the old repo place behind overlayfs, so the merged /etc doesn't serve stale files
 drop_caches() { sync; { echo 3 > /proc/sys/vm/drop_caches; } 2>/dev/null || true; }
 
-# Files in the overlay's upper /etc (changed from the image or new) that aren't tracked, minus .gitignore
+# Files in the overlay's upper /etc (changed from the image or new) that aren't tracked, minus .gitignore.
+# Copies identical to the image don't count: clean-overlay removes them at boot.
 changed_untracked() {
   [ -d "$UPPER" ] || return 0
-  ( cd "$UPPER" && git --git-dir="$REPO" --work-tree=. ls-files --others --exclude-per-directory=.gitignore )
+  ( cd "$UPPER" && git --git-dir="$REPO" --work-tree=. ls-files --others --exclude-per-directory=.gitignore |
+    while IFS= read -r f; do
+      if [ -L "$f" ]; then
+        [ -L "/rom/etc/$f" ] && [ "$(readlink "$f")" = "$(readlink "/rom/etc/$f")" ] && continue
+      elif [ -f "/rom/etc/$f" ] && cmp -s "$f" "/rom/etc/$f"; then
+        continue
+      fi
+      echo "$f"
+    done )
 }
 
 setup_repo() {

@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=etcgit
 # Date of the last change; PKG_RELEASE counts changes on the same day
 PKG_VERSION:=2026.10.22
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_LICENSE:=MIT
 
