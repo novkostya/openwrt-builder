@@ -235,6 +235,8 @@ case "$1" in
       drop_caches
       exit $rc
     fi
+    # Paths are relative to /etc unless you are in it
+    case "$PWD/" in /etc/*) ;; *) cd /etc ;; esac
     if [ "$1" = status ]; then shift; cmd_status "$@"; else g "$@"; fi
     ;;
 esac
